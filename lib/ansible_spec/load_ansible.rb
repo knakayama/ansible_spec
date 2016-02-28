@@ -117,13 +117,75 @@ module AnsibleSpec
         v.each {|host|
           res["#{k.to_s}"] << {"uri"=> host, "port"=> 22}
         }
+      elsif v.has_key?('children') && v['children'].is_a?(Array) && v.values.length == 1
+        # contains children only
+        # {"webservers":{"children":["servers"]}}
+        ((res[k.to_s] << get_parent_dyn_inv(dyn_inv, k, v)).flatten!).uniq!
       elsif v.has_key?("hosts") && v['hosts'].is_a?(Array)
         v['hosts'].each {|host|
           res["#{k.to_s}"] << {"uri"=> host, "port"=> 22}
         }
+
+        if v.has_key?('children') && v['children'].is_a?(Array)
+          # contains hosts and children
+          # {"webservers":{"hosts":["aaa.com"],"children":["servers"]}}
+          ((res[k.to_s] << get_parent_dyn_inv(dyn_inv, k, v)).flatten!).uniq!
+        end
+      elsif v.has_key?('children') && v['children'].is_a?(Array) && v.has_key?('vars')
+        # contains children ans vars
+        # {"webservers":{"children":["servers"],"vars":["a":"true"]}}
+        ((res[k.to_s] << get_parent_dyn_inv(dyn_inv, k, v)).flatten!).uniq!
       end
     }
+    if res.has_key?('vars')
+      # ignore vars group
+      res = res.tap{ |h| h.delete('vars') }
+    end
     return res
+  end
+
+  # recursively parse child
+  # param  dyn_inv      {"atlanta":{"hosts":["atlanta-1"]},"southeast":{"hosts":[],"children":["atlanta"]}}
+  # param  parent       "southeast"
+  # param  parent_value {"hosts":[],"children":["atlanta"]}
+  # return [{"uri"=>"atlanta-1", "port"=>22}]
+  def self.get_parent_dyn_inv(dyn_inv, parent, parent_value)
+    arry = Array.new
+
+    parent_value['children'].each do |child|
+      if dyn_inv.has_key?(child)
+        dyn_inv[child].each do |key, value|
+          next if key == parent # prevents from duplicating parent's hosts
+          next if key == 'vars' # prevents from parsing vars key
+
+          if key == 'children' && dyn_inv.has_key?(value[0])
+            (arry << get_parent_dyn_inv(dyn_inv, child, dyn_inv[child])).flatten!
+          elsif dyn_inv[child].include?(key) && key != 'hosts'
+            # {"webservers":["aaa.com","bbb.com"],"servers":{"children":["webservers"]}}
+            arry <<  {'uri'=> key, 'port'=> 22}
+          elsif value.is_a?(Array)
+            # {"webservers":["aaa.com","bbb.com"]}
+            value.each do |host|
+              arry <<  {'uri'=> host, 'port'=> 22}
+            end
+          elsif value.is_a?(Hash)
+            if value.has_key?('children') && value['children'].is_a?(Array) && value.values.length == 1
+              (arry << get_parent_dyn_inv(dyn_inv, key, value)).flatten!
+            elsif value.has_key?('hosts') && value['hosts'].is_a?(Array)
+              value['hosts'].each do |host|
+                arry << {'uri'=> host, 'port'=> 22}
+              end
+            end
+
+            if value.has_key?('children') && value['children'].is_a?(Array)
+              (arry << get_parent_dyn_inv(dyn_inv, key, value)).flatten!
+            end
+          end
+        end
+      end
+    end
+
+    return arry
   end
 
   # param ansible_ssh_port=22
